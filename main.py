@@ -16,35 +16,40 @@ mydb = mysql.connector.connect(
 # Instantialize cursor
 mycursor = mydb.cursor()
 
-# TODO: Get oldest story already scraped 
-# TODO: SELECT * FROM stories WHERE status = 'GPT' ORDER BY pubDate ASC LIMIT 1
-mycursor.execute("SELECT * FROM stories LIMIT 1")
+# TODO: Get oldest story already scraped via SMMRY API
+mycursor.execute("SELECT * FROM storyContent WHERE STATUS = 2 ORDER BY ID ASC LIMIT 1")
 
 story = mycursor.fetchone()
 
 # If there's no rows, the process is up to date with the data
 if story is not None:
 
-    # Generate prompt ############################################################
+    # Generate prompt ##########################################################
 
-    # Retrieve title and first sentence from story
-    title = story[7]
-    sm_api_content = story[4].split('[BREAK] ')[0]
+    # Retrieve title and list of sentences from story
+    title = story[6].strip()
+    sentences = story[3].split('[BREAK]')
+
+    sm_api_content = sentences[0].strip()
+
+    # Check that title and zeroth sentence are different
+    if(title.lower() in sm_api_content.lower() or sm_api_content.lower() in title.lower()):
+        # TODO: Detect sentences that are highly similar yet not identical to title
+        sm_api_content = sentences[1].strip()
 
     # Generate prompt, separate title and content by paragraph break
     # Concatenate triple quoted string with title and content
     # Source:   https://stackoverflow.com/questions/24070819/concatenation-of-triple-quoted-strings
     # Accessed: 2021-12-31
-    # TODO: Replace \" and \' escape characters
-    prompt = f'''{title}
+    prompt = f'''{title}\n\n{sm_api_content}'''
 
-    {sm_api_content}'''
+    print(prompt)
 
     # Calculate original length of story #######################################
 
     # Retrieve story length and percent reduced
-    sm_api_character_count = story[5]
-    sm_api_content_reduced = story[6]
+    sm_api_character_count = story[4]
+    sm_api_content_reduced = story[5]
 
     # Determine reduction factor so that we can reverse engineer original length
     reduction_factor = ((100 - sm_api_content_reduced) / 100)
@@ -53,10 +58,9 @@ if story is not None:
     original_length = sm_api_character_count / reduction_factor
 
     # Calculate prompt_length ##################################################
-
     # prompt_length =   (desired output amount)
-    #                 ÷ (total character count ever produced) / (total length ever requested)
-    #                 -----------------------------------------------------------------------
+    #                 ÷ ((total character count ever produced) / (total length ever requested))
+    #                 ------------------------------------------------------------------------
 
     # Retrieve available historical data
     mycursor.execute("SELECT * FROM tokens LIMIT 1")
@@ -67,15 +71,12 @@ if story is not None:
         avg_output_length = token_data[1]
         avg_prompt_length = token_data[0]
     else:
-        avg_output_length = 4
-        avg_prompt_length = 1
+        avg_output_length = 9
+        avg_prompt_length = 2
     
     token_ratio = avg_output_length / avg_prompt_length
 
     prompt_length = round(original_length / token_ratio)
-
-    print(token_ratio)
-    print(prompt_length)
 
     # Use GPT-Neo to generate text from prompt #################################
 
@@ -97,6 +98,7 @@ if story is not None:
     print(gen_text)
 
     # Get length of text
+    # TODO: Detect unusually short output length
     output_length = len(gen_text)
 
     # Save prompt length and generated length
@@ -113,5 +115,8 @@ if story is not None:
     mycursor.execute(sql, val)
 
     mydb.commit()
+
+else:
+    print("No content to process")
 
 print(datetime.datetime.now())
