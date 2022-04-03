@@ -17,11 +17,6 @@ try:
     database="news_db"
     )
 
-    # Initiate transaction
-    # https://pynative.com/python-mysql-transaction-management-using-commit-rollback/
-    # Accessed: 2022-03-26
-    mydb.autocommit = False
-
     # Instantialize cursor
     mycursor = mydb.cursor()
 
@@ -54,6 +49,8 @@ try:
         # Source:   https://stackoverflow.com/questions/24070819/concatenation-of-triple-quoted-strings
         # Accessed: 2021-12-31
         prompt = f'''{title}\n\n{sm_api_content}'''
+
+        print(prompt)
 
         # Calculate original length of story #######################################
 
@@ -105,10 +102,12 @@ try:
 
         input_ids = tokenizer(prompt, return_tensors="pt").input_ids
 
-        gen_tokens = model.generate(input_ids, do_sample=True, temperature=0.9, max_length=prompt_length)
+        gen_tokens = model.generate(input_ids, do_sample=True, temperature=0.9, max_length=500)
 
         gen_text = tokenizer.batch_decode(gen_tokens)[0]
         
+        print(gen_text)
+
         print("Successfully generated.")
 
         # Found data_type of sm_api_content and used for new column gpt_neo_content
@@ -117,50 +116,54 @@ try:
         # Accessed: 2022-03-26
         if gen_text is not None:
 
-            print("Saving in database and updating status of Story")
-            
-            sql = "UPDATE storyContent SET gpt_neo_content = %s WHERE id = %s"
-
-            affected_rows = mycursor.execute(sql, (gen_text, story_id))
-
-            if affected_rows = 1:
+            try:
+                print("Creating SQL command to save in GPT-generated content in database and update status of Story")
                 
+                sql = "UPDATE storyContent SET gpt_neo_content = %s WHERE id = %s"
+
+                mycursor.execute(sql, (gen_text, story_id))
+
                 # Really should be paramaterized i.e., SET STATUS = %s
                 sql = "UPDATE Story SET status = 4 where id = %s"
-                
-                affected_rows = mycursor.execute(sql, (id))
 
-                if affected_rows = 1:
-            
-                    # Get length of text
-                    # TODO: Detect unusually short output length
-                    output_length = len(gen_text)
+                print("about to call mycursor.execute")
 
-                    # Save prompt length and generated length
-                    if token_data is None:
-                        sql = "INSERT INTO tokens (prompt_length, output_length) VALUES (%s, %s)"
-                    else:
-                        sql = "UPDATE tokens SET prompt_length = %s, output_length = %s"
+                mycursor.execute(sql, (story_id,))
 
-                        output_length += avg_output_length
-                        prompt_length += avg_prompt_length
+                print("mycursor.execute succesfully called")
 
-                    val = (prompt_length, output_length)
+                # Get length of text
+                # TODO: Detect unusually short output length
+                output_length = len(gen_text)
 
-                    mycursor.execute(sql, val)
+                # Save prompt length and generated length
+                if token_data is None:
+                    sql = "INSERT INTO tokens (prompt_length, output_length) VALUES (%s, %s)"
+                else:
+                    sql = "UPDATE tokens SET prompt_length = %s, output_length = %s"
 
-                    mydb.commit()
+                    output_length += avg_output_length
+                    prompt_length += avg_prompt_length
 
-                    print("Successfully updated database with content")
+                val = (prompt_length, output_length)
 
+                mycursor.execute(sql, val)
+
+                mydb.commit()
+
+                print("Successfully updated database with content")
+
+            except Exception as ex:
+                print("Exception during transaction: " + ex)
+                # reverting changes because of exception
+                mydb.rollback()
     else:
         print("No content to process")
 
 
-except ex as ex:
+except Exception as ex:
     print("Something error happens: ", ex)
-    # reverting changes because of exception
-    mydb.rollback()
+    
 finally:
     # closing database connection.
     if mydb.is_connected():
