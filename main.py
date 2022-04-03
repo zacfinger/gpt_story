@@ -23,7 +23,7 @@ try:
     print("Querying content from oldest story in Story table")
 
     # TODO: Get oldest story already scraped via SMMRY API
-    mycursor.execute("SELECT * FROM storyContent JOIN Story on Story.id = storyContent.id WHERE STATUS = 2 ORDER BY Story.id ASC LIMIT 1")
+    mycursor.execute("SELECT * FROM storyContent JOIN Story on Story.id = storyContent.id WHERE STATUS = 2 AND storyContent.gpt_neo_content IS NULL ORDER BY Story.id ASC LIMIT 1")
 
     story = mycursor.fetchone()
 
@@ -37,6 +37,14 @@ try:
         title = story[6].strip()
         sentences = story[3].split('[BREAK]')
 
+        # Lock story for asynchronous access by other processes
+        # Really should be paramaterized i.e., SET STATUS = %s
+        sql = "UPDATE Story SET status = 4 where id = %s"
+
+        mycursor.execute(sql, (story_id,))
+
+        mydb.commit()
+        
         sm_api_content = sentences[0].strip()
 
         # Check that title and zeroth sentence are different
@@ -87,6 +95,9 @@ try:
 
         prompt_length = round(original_length / token_ratio)
 
+        if prompt_length > 2049:
+            prompt_length = 2049
+
         # Use GPT-Neo to generate text from prompt #################################
         print("Generating output via GPT-Neo...\n")
 
@@ -102,7 +113,7 @@ try:
 
         input_ids = tokenizer(prompt, return_tensors="pt").input_ids
 
-        gen_tokens = model.generate(input_ids, do_sample=True, temperature=0.9, max_length=500)
+        gen_tokens = model.generate(input_ids, do_sample=True, temperature=0.9, max_length=prompt_length)
 
         gen_text = tokenizer.batch_decode(gen_tokens)[0]
         
@@ -116,53 +127,54 @@ try:
         # Accessed: 2022-03-26
         if gen_text is not None:
 
-            try:
-                print("Creating SQL command to save in GPT-generated content in database and update status of Story")
+            print("Creating SQL command to save in GPT-generated content in database and update status of Story")
                 
-                sql = "UPDATE storyContent SET gpt_neo_content = %s WHERE id = %s"
+            sql = "UPDATE storyContent SET gpt_neo_content = %s WHERE id = %s"
 
-                mycursor.execute(sql, (gen_text, story_id))
+            mycursor.execute(sql, (gen_text, story_id))
 
-                # Really should be paramaterized i.e., SET STATUS = %s
-                sql = "UPDATE Story SET status = 4 where id = %s"
+            # Set story to GPT completed status
+            sql = "UPDATE Story SET status = 5 where id = %s"
 
-                print("about to call mycursor.execute")
+            mycursor.execute(sql, (story_id,))
 
-                mycursor.execute(sql, (story_id,))
+            # Get length of text
+            # TODO: Detect unusually short output length
+            output_length = len(gen_text)
 
-                print("mycursor.execute succesfully called")
+            # Save prompt length and generated length
+            if token_data is None:
+                sql = "INSERT INTO tokens (prompt_length, output_length) VALUES (%s, %s)"
+            else:
+                sql = "UPDATE tokens SET prompt_length = %s, output_length = %s"
 
-                # Get length of text
-                # TODO: Detect unusually short output length
-                output_length = len(gen_text)
+                output_length += avg_output_length
+                prompt_length += avg_prompt_length
 
-                # Save prompt length and generated length
-                if token_data is None:
-                    sql = "INSERT INTO tokens (prompt_length, output_length) VALUES (%s, %s)"
-                else:
-                    sql = "UPDATE tokens SET prompt_length = %s, output_length = %s"
+            val = (prompt_length, output_length)
 
-                    output_length += avg_output_length
-                    prompt_length += avg_prompt_length
+            mycursor.execute(sql, val)
 
-                val = (prompt_length, output_length)
+            mydb.commit()
 
-                mycursor.execute(sql, val)
-
-                mydb.commit()
-
-                print("Successfully updated database with content")
-
-            except Exception as ex:
-                print("Exception during transaction: " + ex)
-                # reverting changes because of exception
-                mydb.rollback()
+            print("Successfully updated database with content")
+                
     else:
         print("No content to process")
 
-
 except Exception as ex:
-    print("Something error happens: ", ex)
+    print("Something " + type(ex).__name__ + " happens: ", ex)
+
+    # reverting changes because of exception
+    if mydb is not None:
+        mydb.rollback()
+
+        if story_id is not None:
+            # Set story to GPT error status
+            sql = "UPDATE Story SET status = 6 where id = %s"
+
+            mycursor.execute(sql, (story_id,))
+            mydb.commit()
     
 finally:
     # closing database connection.
